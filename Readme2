@@ -1,0 +1,55 @@
+This updated algorithm now incorporates the requested risk management features and improvements. Here are the key additions and changes:
+
+Drawdown Limits:
+
+Added a max_drawdown parameter (set to 2% by default).
+The check_drawdown() method monitors the account balance and stops trading if the drawdown limit is exceeded.
+
+
+Risk Controls:
+
+Implemented stop-loss and take-profit orders in the execute_trade() method.
+Stop-loss is set at 1% below the entry price, and take-profit at 2% above (these are configurable).
+
+
+Risk Parity:
+
+Added a max_position_size parameter (set to 10% of the portfolio by default).
+The manage_positions() method now calculates the maximum position size based on the current account equity.
+
+
+Monitoring:
+
+Added a monitor_performance() method that logs current equity, buying power, number of positions, and overall performance.
+This method is called in each iteration of the main loop.
+
+
+Improved Position Management:
+
+Now uses Alpaca's API to get current positions, ensuring accuracy.
+Sells entire positions when the signal turns bearish, reducing the number of day trades.
+
+
+Enhanced Trade Execution:
+
+Uses limit orders for entries to avoid slippage.
+Implements both stop-loss and take-profit orders as soon as a position is opened.
+
+
+
+To use this algorithm:
+
+Install required libraries: pip install alpaca-trade-api pandas numpy
+Replace API_KEY and API_SECRET with your Alpaca API credentials.
+Adjust risk parameters (max_drawdown, stop_loss_pct, take_profit_pct, max_position_size) as needed.
+Run the script to start the algorithm.
+
+Important considerations:
+
+This algorithm now has multiple layers of risk management: PDT compliance, drawdown limits, position size limits, and per-trade stop-loss and take-profit orders.
+The performance monitoring allows you to track the algorithm's effectiveness over time.
+The risk parity feature ensures that no single position can disproportionately affect your portfolio.
+Remember that while these risk management features significantly improve the safety of the algorithm, no trading strategy is without risk.
+Always paper trade extensively and consult with a financial advisor before using any algorithmic trading strategy with real money.
+
+This implementation provides a solid foundation for a risk-managed, PDT-compliant trading algorithm suitable for smaller accounts. You can further refine it based on your specific risk tolerance and trading goals.
