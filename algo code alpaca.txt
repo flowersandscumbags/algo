@@ -1,0 +1,98 @@
+```python
+import alpaca_trade_api as tradeapi
+import pandas as pd
+from datetime import datetime, timedelta
+
+# Alpaca API credentials
+API_KEY = "your_api_key"
+API_SECRET = "your_api_secret"
+BASE_URL = "https://paper-api.alpaca.markets"  # Use paper trading for testing
+
+# Initialize Alpaca API
+api = tradeapi.REST(API_KEY, API_SECRET, base_url=BASE_URL, api_version='v2')
+
+def get_stock_data(symbols, timeframe='1D', limit=10):
+    """Fetch stock data for the given symbols."""
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=90)  # Get 90 days of data for 13-week performance
+    
+    data = {}
+    for symbol in symbols:
+        bars = api.get_bars(symbol, timeframe, start=start_date.isoformat(), end=end_date.isoformat(), limit=limit).df
+        data[symbol] = bars
+    return data
+
+def calculate_metrics(data):
+    """Calculate required metrics for each stock."""
+    metrics = {}
+    for symbol, df in data.items():
+        metrics[symbol] = {
+            'Symbol': symbol,
+            'Security Price': df['close'].iloc[-1],
+            'Volume (10 Day Avg)': df['volume'].rolling(window=10).mean().iloc[-1],
+            '% Price Change Today': (df['close'].iloc[-1] - df['open'].iloc[-1]) / df['open'].iloc[-1] * 100,
+            'Volume (Today/Avg 10 Day)': df['volume'].iloc[-1] / df['volume'].rolling(window=10).mean().iloc[-1],
+            'Price Performance (5 Days)': (df['close'].iloc[-1] - df['close'].iloc[-5]) / df['close'].iloc[-5] * 100,
+            'Price Performance (13 Weeks)': (df['close'].iloc[-1] - df['close'].iloc[0]) / df['close'].iloc[0] * 100,
+        }
+    return metrics
+
+def detect_candlestick_patterns(data):
+    """Detect candlestick patterns (simplified for example)."""
+    patterns = {}
+    for symbol, df in data.items():
+        patterns[symbol] = {
+            'Bullish Engulfing': False,
+            'Hammer': False,
+            'Inside Bar': False,
+            'Key Reversal Bar': False,
+            'Bearish Patterns': False  # Simplified for example
+        }
+        # Implement pattern detection logic here
+        # This is a placeholder and should be replaced with actual technical analysis
+    return patterns
+
+def calculate_score(metrics, patterns, volume_threshold=1.5, price_change_threshold=1.0):
+    """Calculate trading score for each stock."""
+    scores = {}
+    for symbol, metric in metrics.items():
+        if metric['Volume (Today/Avg 10 Day)'] < volume_threshold or abs(metric['% Price Change Today']) < price_change_threshold:
+            continue
+        
+        score = 0
+        # Volume score (0-40 points)
+        score += min(metric['Volume (Today/Avg 10 Day)'] * 10, 40)
+        
+        # Candlestick pattern score (0-30 points)
+        bullish_patterns = sum(1 for k, v in patterns[symbol].items() if k != 'Bearish Patterns' and v)
+        score += bullish_patterns * 10 - (5 if patterns[symbol]['Bearish Patterns'] else 0)
+        
+        # Price change score (0-20 points)
+        score += min(abs(metric['% Price Change Today']) * 2, 20)
+        
+        # Performance score (0-10 points)
+        perf_score = (metric['Price Performance (5 Days)'] * 0.7) + (metric['Price Performance (13 Weeks)'] * 0.3)
+        score += min(perf_score, 10)
+        
+        if score > 50 and bullish_patterns > 0:
+            scores[symbol] = score
+    
+    return scores
+
+def get_trading_signals(symbols):
+    """Generate trading signals based on the algorithm."""
+    data = get_stock_data(symbols)
+    metrics = calculate_metrics(data)
+    patterns = detect_candlestick_patterns(data)
+    scores = calculate_score(metrics, patterns)
+    
+    return sorted(scores.items(), key=lambda x: x[1], reverse=True)[:5]
+
+# Main execution
+if __name__ == "__main__":
+    symbols = ["AAPL", "GOOGL", "MSFT", "AMZN", "FB"]  # Example symbols
+    signals = get_trading_signals(symbols)
+    print("Top 5 Trading Signals:")
+    for symbol, score in signals:
+        print(f"{symbol}: {score}")
+```

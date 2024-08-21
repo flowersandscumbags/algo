@@ -1,0 +1,58 @@
+Algorithm: DayTradingSignalGenerator
+
+Input:
+    - stockData: Array of stock data objects containing all provided metrics
+    - volumeThreshold: Minimum volume ratio (Today/Avg 10 Day) to consider
+    - priceChangeThreshold: Minimum % price change today to consider
+
+Output:
+    - tradingSignals: Array of objects containing stock symbols and their trading scores
+
+Variables:
+    - score: Float
+    - bullishPatterns: Integer
+    - bearishPatterns: Integer
+
+Function CalculatePerformanceScore(fiveDayPerf, thirteenWeekPerf):
+    return (fiveDayPerf * 0.7) + (thirteenWeekPerf * 0.3)
+
+Function CountBullishPatterns(stock):
+    return sum of all bullish pattern flags in stock data
+
+Function CountBearishPatterns(stock):
+    return sum of all bearish pattern flags in stock data
+
+Begin:
+    1. Initialize empty tradingSignals array
+
+    2. For each stock in stockData:
+        3. If stock['Volume (Today/Avg 10 Day)'] < volumeThreshold OR 
+           abs(stock['% Price Change Today']) < priceChangeThreshold:
+            Continue to next stock
+
+        4. score = 0
+        5. bullishPatterns = CountBullishPatterns(stock)
+        6. bearishPatterns = CountBearishPatterns(stock)
+
+        7. // Volume score (0-40 points)
+        score += min(stock['Volume (Today/Avg 10 Day)'] * 10, 40)
+
+        8. // Candlestick pattern score (0-30 points)
+        score += (bullishPatterns * 10) - (bearishPatterns * 5)
+
+        9. // Price change score (0-20 points)
+        score += min(abs(stock['% Price Change Today']) * 2, 20)
+
+        10. // Performance score (0-10 points)
+        perfScore = CalculatePerformanceScore(stock['Price Performance (5 Days)'], 
+                                              stock['Price Performance (13 Weeks)'])
+        score += min(perfScore, 10)
+
+        11. If score > 50 AND bullishPatterns > 0:
+            12. Append {symbol: stock['Symbol'], score: score} to tradingSignals
+
+    13. Sort tradingSignals by score in descending order
+
+    14. Return top 5 entries from tradingSignals
+
+End

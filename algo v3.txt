@@ -1,0 +1,258 @@
+```python
+import alpaca_trade_api as tradeapi
+import pandas as pd
+import numpy as np
+import asyncio
+import logging
+from datetime import datetime, timedelta
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Alpaca API credentials
+API_KEY = "your_api_key"
+API_SECRET = "your_api_secret"
+BASE_URL = "https://paper-api.alpaca.markets"  # Use paper trading for testing
+
+# Initialize Alpaca API
+api = tradeapi.REST(API_KEY, API_SECRET, base_url=BASE_URL, api_version='v2')
+
+class RiskManagedPDTCompliantTrading:
+    def __init__(self, max_symbols=5, lookback_days=5, update_interval=300):
+        self.max_symbols = max_symbols
+        self.lookback_days = lookback_days
+        self.update_interval = update_interval  # in seconds
+        self.symbols = []
+        self.data = {}
+        self.metrics = {}
+        self.signals = {}
+        self.positions = {}
+        self.day_trades = []
+        self.max_day_trades = 3  # Maximum allowed day trades in 5 trading days
+        
+        # Risk management parameters
+        self.max_drawdown = 0.02  # 2% maximum daily drawdown
+        self.stop_loss_pct = 0.01  # 1% stop loss
+        self.take_profit_pct = 0.02  # 2% take profit
+        self.max_position_size = 0.1  # Maximum 10% of portfolio in any single position
+        self.initial_balance = None
+        self.current_balance = None
+
+    async def get_tradable_assets(self):
+        """Get list of tradable assets."""
+        assets = api.list_assets(status='active', asset_class='us_equity')
+        return [asset.symbol for asset in assets if asset.tradable]
+
+    async def screen_symbols(self):
+        """Screen for bullish symbols."""
+        all_symbols = await self.get_tradable_assets()
+        end = datetime.now()
+        start = end - timedelta(days=self.lookback_days)
+        
+        bullish_symbols = []
+        for symbol in all_symbols:
+            try:
+                bars = api.get_bars(symbol, '1Day', start=start.isoformat(), end=end.isoformat()).df
+                if len(bars) < self.lookback_days:
+                    continue
+                
+                # Calculate metrics
+                bars['sma_5'] = bars['close'].rolling(window=5).mean()
+                bars['sma_10'] = bars['close'].rolling(window=10).mean()
+                latest_volume = bars['volume'].iloc[-1]
+                avg_volume = bars['volume'].mean()
+                price = bars['close'].iloc[-1]
+                
+                # Bullish criteria
+                if (price > bars['sma_5'].iloc[-1] > bars['sma_10'].iloc[-1] and
+                    latest_volume > avg_volume and
+                    5 <= price <= 100):  # Price between $5 and $100
+                    bullish_symbols.append(symbol)
+                
+                if len(bullish_symbols) >= self.max_symbols:
+                    break
+            except Exception as e:
+                logger.error(f"Error screening {symbol}: {e}")
+        
+        self.symbols = bullish_symbols[:self.max_symbols]
+        logger.info(f"Selected symbols: {self.symbols}")
+
+    async def fetch_recent_data(self):
+        """Fetch recent minute-bar data for selected symbols."""
+        end = datetime.now()
+        start = end - timedelta(minutes=30)  # Fetch last 30 minutes of data
+        for symbol in self.symbols:
+            try:
+                bars = api.get_bars(symbol, '1Min', start=start.isoformat(), end=end.isoformat()).df
+                self.data[symbol] = bars
+                logger.info(f"Fetched recent data for {symbol}")
+            except Exception as e:
+                logger.error(f"Error fetching data for {symbol}: {e}")
+
+    def calculate_metrics(self, symbol):
+        """Calculate trading metrics for a symbol."""
+        df = self.data[symbol]
+        if df.empty:
+            return
+        
+        current_price = df['close'].iloc[-1]
+        self.metrics[symbol] = {
+            'price': current_price,
+            'volume': df['volume'].iloc[-1],
+            'price_change': df['close'].pct_change().iloc[-1],
+            'vwap': (df['close'] * df['volume']).sum() / df['volume'].sum(),
+            'momentum': (current_price / df['close'].iloc[0] - 1) * 100,
+            'volatility': df['close'].pct_change().std() * 100,
+            'sma_5': df['close'].rolling(5).mean().iloc[-1],
+            'sma_10': df['close'].rolling(10).mean().iloc[-1],
+        }
+
+    def calculate_signal(self, symbol):
+        """Calculate trading signal based on current metrics."""
+        m = self.metrics[symbol]
+        score = 0
+
+        if m['price'] > m['vwap']:
+            score += 10
+        if m['momentum'] > 0:
+            score += m['momentum']
+        if m['sma_5'] > m['sma_10']:
+            score += 15
+        if 0.5 < m['volatility'] < 2:
+            score += 10
+
+        self.signals[symbol] = score
+
+    async def execute_trade(self, symbol, action, quantity):
+        """Execute a trade with stop-loss and take-profit orders."""
+        try:
+            current_price = self.metrics[symbol]['price']
+            if action == 'buy':
+                # Calculate stop loss and take profit prices
+                stop_loss = current_price * (1 - self.stop_loss_pct)
+                take_profit = current_price * (1 + self.take_profit_pct)
+                
+                # Submit primary order
+                order = api.submit_order(
+                    symbol=symbol, 
+                    qty=quantity, 
+                    side='buy', 
+                    type='limit', 
+                    time_in_force='day',
+                    limit_price=current_price
+                )
+                
+                # Submit stop loss order
+                api.submit_order(
+                    symbol=symbol,
+                    qty=quantity,
+                    side='sell',
+                    type='stop',
+                    time_in_force='gtc',
+                    stop_price=stop_loss
+                )
+                
+                # Submit take profit order
+                api.submit_order(
+                    symbol=symbol,
+                    qty=quantity,
+                    side='sell',
+                    type='limit',
+                    time_in_force='gtc',
+                    limit_price=take_profit
+                )
+                
+                logger.info(f"Bought {quantity} shares of {symbol} with stop loss at {stop_loss} and take profit at {take_profit}")
+            elif action == 'sell':
+                api.submit_order(symbol=symbol, qty=quantity, side='sell', type='market', time_in_force='day')
+                logger.info(f"Sold {quantity} shares of {symbol}")
+            
+            # Record the day trade
+            self.day_trades.append(datetime.now().date())
+            # Remove day trades older than 5 trading days
+            self.day_trades = [date for date in self.day_trades if (datetime.now().date() - date).days <= 5]
+        except Exception as e:
+            logger.error(f"Error executing trade for {symbol}: {e}")
+
+    def can_day_trade(self):
+        """Check if a day trade can be made without violating PDT rule."""
+        return len(self.day_trades) < self.max_day_trades
+
+    def check_drawdown(self):
+        """Check if the current drawdown exceeds the maximum allowed."""
+        if self.initial_balance is None:
+            self.initial_balance = float(api.get_account().equity)
+            self.current_balance = self.initial_balance
+        else:
+            self.current_balance = float(api.get_account().equity)
+        
+        drawdown = (self.initial_balance - self.current_balance) / self.initial_balance
+        if drawdown > self.max_drawdown:
+            logger.warning(f"Maximum drawdown exceeded: {drawdown:.2%}")
+            return False
+        return True
+
+    async def manage_positions(self):
+        """Manage positions based on signals and risk parameters."""
+        if not self.check_drawdown():
+            logger.info("Stopping trading due to excessive drawdown")
+            return
+
+        account = api.get_account()
+        equity = float(account.equity)
+        max_position_value = equity * self.max_position_size
+
+        for symbol, signal in self.signals.items():
+            current_position = api.get_position(symbol) if symbol in self.positions else None
+            price = self.metrics[symbol]['price']
+            max_shares = int(max_position_value / price)
+
+            if signal > 20 and not current_position and self.can_day_trade():
+                shares_to_buy = min(max_shares, 1)  # Buy 1 share at a time
+                await self.execute_trade(symbol, 'buy', shares_to_buy)
+                self.positions[symbol] = shares_to_buy
+            elif signal < -20 and current_position:
+                await self.execute_trade(symbol, 'sell', int(current_position.qty))
+                del self.positions[symbol]
+
+    async def monitor_performance(self):
+        """Monitor and log trading performance."""
+        account = api.get_account()
+        equity = float(account.equity)
+        buying_power = float(account.buying_power)
+        
+        logger.info(f"Current equity: ${equity:.2f}")
+        logger.info(f"Buying power: ${buying_power:.2f}")
+        logger.info(f"Number of positions: {len(self.positions)}")
+        logger.info(f"Day trades made: {len(self.day_trades)}")
+
+        if self.initial_balance:
+            performance = (equity - self.initial_balance) / self.initial_balance
+            logger.info(f"Overall performance: {performance:.2%}")
+
+    async def run(self):
+        """Run the risk-managed PDT-compliant dynamic trading algorithm."""
+        while True:
+            await self.screen_symbols()
+            await self.fetch_recent_data()
+            for symbol in self.symbols:
+                self.calculate_metrics(symbol)
+                self.calculate_signal(symbol)
+            await self.manage_positions()
+            await self.monitor_performance()
+
+            print(f"\nTrading Update at {datetime.now()}:")
+            print(f"Selected Symbols: {self.symbols}")
+            print(f"Current Signals: {self.signals}")
+            print(f"Current Positions: {self.positions}")
+
+            await asyncio.sleep(self.update_interval)
+
+async def main():
+    algorithm = RiskManagedPDTCompliantTrading()
+    await algorithm.run()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
